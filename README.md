@@ -1,2 +1,6 @@
 # robot_learning_algorithms
-Collection of various robot learning algorithms I have implemented
+
+1. DAgger
+2. TD3
+3. SAC
+4. PPO
