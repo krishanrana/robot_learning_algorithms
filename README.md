@@ -1,4 +1,4 @@
-+
+
 Collection of robot learning algorithms for the RLBench environment
 
 - [x] DAgger
