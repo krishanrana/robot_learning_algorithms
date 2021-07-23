@@ -1,6 +1,5 @@
-# robot_learning_algorithms
-
-The following algorithms we implemented and evaluated on complex manipulation tasks in RLBench
++
+Collection of robot learning algorithms for the RLBench environment
 
 - [x] DAgger
 - [x] TD3
