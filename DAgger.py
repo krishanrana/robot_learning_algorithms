@@ -17,6 +17,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import random
+from velocity_controller import joint_velocity_controller
 
 class RRMC():
     def __init__(self):
@@ -36,9 +37,9 @@ class RRMC():
     def p_servo(self, gain=1):
         
         wTe = self.fkine()
-        print("wTe: ", wTe.t)
+        #print("wTe: ", wTe.t)
         wTt = self.target_pose()
-        print("wTt: ", wTt.t)
+        #print("wTt: ", wTt.t)
     
         # Pose difference
         eTt = wTe.inv() * wTt
@@ -49,9 +50,9 @@ class RRMC():
         #ew = np.zeros(3)
         # Form error vector
         e = np.r_[ev, ew]
-        print("e: ", e)
+        #print("e: ", e)
         v = gain * e
-        print("v: ", v)
+        #print("v: ", v)
         return v
     
     def compute_action(self, gain=0.3):
@@ -63,7 +64,7 @@ class RRMC():
             #print(q)
             #print(np.round(self.panda.jacobe(q), 2))
             action = np.linalg.pinv(self.panda.jacobe(q)) @ v
-            print("action: ", action)
+            #print("action: ", action)
 
         except np.linalg.LinAlgError:
             action = np.zeros(env_task.action_size)
@@ -138,27 +139,26 @@ obs = env.reset()
 control_prior = RRMC()
 criterion = nn.MSELoss()
 optimizer = optim.SGD(agent.pi.parameters(), lr=0.01, momentum=0.9)
-total_steps = 1000000
-episode_length = 1000000
+total_steps = 10000000
+episode_length = 150
 experience_dataset = []
 
 descriptions, state = env.reset()
 obs = state.wrist_rgb
 
-env._task.target.set_orientation([3.13793731,  0.22272813, -3.14140487])
-env._task.target.set_position([0.3,  0, 1.1])
 
+control_prior2 = joint_velocity_controller(env._task.robot.arm)
+control_prior2.set_target(env._task.target)
 
-#env._task.target.set_position(env._task.robot.arm.get_tip().get_position())
-#env._task.target.set_position([0,0,0])
-#env._task.robot.arm.get_tip().set_position([0,0,0])
 
 for i in range(total_steps):
     if i%episode_length == 0 and i > 100:
         descriptions, state = env.reset()
-        agent.train()
+        control_prior2.set_target(env._task.target)
+        #agent.train()
     #action = agent.get_action(obs)
-    action = np.append(control_prior.compute_action(0.1), 0.0)
+    #action = np.append(control_prior.compute_action(0.1), 0.0)
+    action = np.append(control_prior2.compute_action(gain=0.8), 1.0)
     #action = np.zeros(8)
     next_state, reward, done = env.step(action)
 
