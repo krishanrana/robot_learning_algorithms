@@ -18,60 +18,10 @@ import torch.nn.functional as F
 import torch.optim as optim
 import random
 from velocity_controller import joint_velocity_controller
+import wandb
+import math
 
-class RRMC():
-    def __init__(self):
-        self.panda = rb.models.DH.Panda()
 
-    def fkine(self):
-        # Tip pose in world coordinate frame
-        wTe = SE3(env._task.robot.arm.get_tip().get_position())*SE3.RPY(env._task.robot.arm.get_tip().get_orientation(), order='zyx')
-        return wTe
-    
-    def target_pose(self):
-        # Target pose in world coordinate frame
-        wTt = SE3(env._task.target.get_position())*SE3.RPY(env._task.target.get_orientation(), order='zyx')
-        print(env._task.target.get_orientation())
-        return wTt
-    
-    def p_servo(self, gain=1):
-        
-        wTe = self.fkine()
-        #print("wTe: ", wTe.t)
-        wTt = self.target_pose()
-        #print("wTt: ", wTt.t)
-    
-        # Pose difference
-        eTt = wTe.inv() * wTt
-        # Translational velocity error
-        ev = eTt.t
-        # Angular velocity error
-        ew = eTt.rpy() * np.pi/180
-        #ew = np.zeros(3)
-        # Form error vector
-        e = np.r_[ev, ew]
-        #print("e: ", e)
-        v = gain * e
-        #print("v: ", v)
-        return v
-    
-    def compute_action(self, gain=0.3):
-        
-        try:
-            v = self.p_servo(gain)
-            #v[3:] *= 10
-            q = env._task.robot.arm.get_joint_positions()
-            #print(q)
-            #print(np.round(self.panda.jacobe(q), 2))
-            action = np.linalg.pinv(self.panda.jacobe(q)) @ v
-            #print("action: ", action)
-
-        except np.linalg.LinAlgError:
-            action = np.zeros(env_task.action_size)
-            print('Fail')
-        return action
-        
-        
 class Model(nn.Module):
     
     def __init__(self, act_dim):
@@ -94,7 +44,6 @@ class Model(nn.Module):
         x = torch.tanh(self.fc4(x))
         return x
     
-
 class Agent:
     
     def __init__(self):
@@ -102,7 +51,7 @@ class Agent:
         
     def train(self):
         print("Training...")
-        batch = random.sample(experience_dataset, 32)
+        batch = random.sample(experience_dataset, batch_size)
         batch_obs = torch.as_tensor([demo[1] for demo in batch], dtype=torch.float32).to(device).permute(0,3,1,2)
         predicted_actions = self.pi(batch_obs)
         ground_truth_actions = torch.as_tensor([demo[0] for demo in batch], dtype=torch.float32).to(device).detach()
@@ -116,56 +65,90 @@ class Agent:
             obs = obs.permute(0,3,1,2)
             act = self.pi(obs).cpu().numpy()[0]
             return act
-    
-    
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    def evaluate(self):
+        success = 0
+        for i in range(5):
+            descriptions, state = env.reset()
+            obs = state.wrist_rgb
+            done = False
+            for j in range(150):
+                a = agent.get_action(obs)
+                next_state, reward, done = env.step(a)
+                if done:
+                    success += 1
+                    break
+                obs = next_state.wrist_rgb
+        wandb.log({"success_rate":(success/5)})
+        return
+
+def decay(k, x0, x):
+    b = 1 / (1 + math.exp(k*(x - x0))) 
+    return b
+
+wandb.init(project="DAgger")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+   
 obs_config = ObservationConfig()
 obs_config.set_all(False)
 obs_config.wrist_camera.rgb = True
 obs_config.joint_positions  = True
+obs_config.image_size = (64, 64)
 
+# SETUP
+# Environment
 action_mode = ActionMode(ArmActionMode.ABS_JOINT_VELOCITY)
 env_task = Environment(action_mode, '', obs_config, False)
 env_task.launch()
-
 env = env_task.get_task(ReachTarget)
-agent = Agent()
-
-env._task.robot.arm.set_joint_forces([1000,1000,1000,1000,1000,1000,1000])
-
-
-obs = env.reset()
-control_prior = RRMC()
-criterion = nn.MSELoss()
-optimizer = optim.SGD(agent.pi.parameters(), lr=0.01, momentum=0.9)
-total_steps = 10000000
-episode_length = 150
-experience_dataset = []
-
 descriptions, state = env.reset()
 obs = state.wrist_rgb
+done = False
+episode_num = 0
+#env._task.robot.arm.set_joint_forces([1000,1000,1000,1000,1000,1000,1000])
 
+# Agent
+agent = Agent()
+criterion = nn.MSELoss()
+optimizer = optim.SGD(agent.pi.parameters(), lr=0.01, momentum=0.9)
+total_steps = int(10e6)
+episode_length = 150
+batch_size = 32
+evaluate_after = 10
+experience_dataset = []
 
-control_prior2 = joint_velocity_controller(env._task.robot.arm)
-control_prior2.set_target(env._task.target)
+# Control Prior
+control_prior = joint_velocity_controller(env._task.robot.arm)
+control_prior.set_target(env._task.target)
 
-
+# RUN
 for i in range(total_steps):
-    if i%episode_length == 0 and i > 100:
-        descriptions, state = env.reset()
-        control_prior2.set_target(env._task.target)
-        #agent.train()
-    #action = agent.get_action(obs)
-    #action = np.append(control_prior.compute_action(0.1), 0.0)
-    action = np.append(control_prior2.compute_action(gain=0.8), 1.0)
-    #action = np.zeros(8)
-    next_state, reward, done = env.step(action)
 
-    nobs = state.wrist_rgb
-    #experience_dataset.append([control_prior.act(obs), obs])
-    experience_dataset.append([action, obs])
+    if done and i > 100: #i%episode_length == 0 and i > 100:
+        agent.train()
+        episode_num += 1
+        if episode_num%evaluate_after == 0:
+            print("Evaluating...")
+            agent.evaluate()
+        descriptions, state = env.reset()
+        obs = state.wrist_rgb
+        control_prior.set_target(env._task.target) 
+
+    cq = env._task.robot.arm.get_joint_positions()
+    tq = control_prior.target_q
+
+    # Compute action using combinatorial approach shown in paper
+    beta = decay(0.00004, 200000, i)
+    expert_action = control_prior.compute_action(gain=0.8)
+    policy_action = agent.get_action(obs)
+    action = (beta * expert_action) + (1-beta)*policy_action
+
+    next_state, reward, done = env.step(action)
+    nobs = next_state.wrist_rgb
+    experience_dataset.append([control_prior.recompute_action(cq, tq, gain=0.8), obs])
     obs = nobs
+
+    wandb.log({"beta":beta})
     
 print('Done')
 env.shutdown()

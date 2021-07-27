@@ -24,5 +24,12 @@ class joint_velocity_controller():
         current_q = self.panda.get_joint_positions()
         err = current_q - self.target_q
         v = -err * gain
+        v = np.append(v, 1.0)
+        return v
+
+    def recompute_action(self, current_q, target_q, gain=0.03):
+        err = current_q - target_q
+        v = -err * gain
+        v = np.append(v, 1.0)
         return v
 
