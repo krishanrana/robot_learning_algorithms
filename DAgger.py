@@ -18,6 +18,7 @@ import torch.nn.functional as F
 import torch.optim as optim
 import random
 from velocity_controller import joint_velocity_controller
+from position_controller import cartesian_position_controller
 import wandb
 import math
 
@@ -120,6 +121,9 @@ experience_dataset = []
 # Control Prior
 control_prior = joint_velocity_controller(env._task.robot.arm)
 control_prior.set_target(env._task.target)
+
+#control_prior = cartesian_position_controller(env._task.robot.arm)
+#control_prior.set_target(env._task.target)
 
 # RUN
 for i in range(total_steps):
